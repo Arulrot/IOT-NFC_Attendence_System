@@ -1,0 +1,113 @@
+var employeeMap = {
+  "4D8DC26951990": { name: "arul", manager: "venket1", domain: "Development" },
+  "4EBDDsdv51990": { name: "rot", manager: "venket2", domain: "Development" },
+  
+};
+
+function getEmployeeDetails(uid) {
+  return employeeMap[uid] || { name: "Unknown Employee", manager: "Unknown Manager", domain: "Unknown Domain" };
+}
+
+function doGet(e) {
+  try {
+    Logger.log("Request received");
+
+    if (!e || !e.parameter || !e.parameter.uid) {
+      Logger.log("Missing UID parameter");
+      return ContentService.createTextOutput("Missing UID parameter");
+    }
+
+    var uid = e.parameter.uid;
+    Logger.log("UID: " + uid);
+
+    var ss = SpreadsheetApp.openById("\\sheetuid");
+    Logger.log("Spreadsheet opened");
+
+    var sheet = ss.getSheetByName("Sheet1");
+    if (!sheet) {
+      Logger.log("Sheet not found");
+      return ContentService.createTextOutput("Sheet not found");
+    }
+    Logger.log("Sheet found");
+
+    var empDetails = getEmployeeDetails(uid);
+    Logger.log("Employee Details: " + JSON.stringify(empDetails));
+
+    var now = new Date();
+    var date = Utilities.formatDate(now, Session.getScriptTimeZone(), "yyyy-MM-dd");
+    var time = Utilities.formatDate(now, Session.getScriptTimeZone(), "HH:mm:ss");
+    Logger.log("Date: " + date + " Time: " + time);
+
+    // Get all data starting from row 2
+    var data = sheet.getDataRange().getValues();
+    var lastEntryIndex = -1; // Initialize to -1 to indicate no matching entry found
+
+    // Search for the most recent entry with the given UID that has an empty OUTIME
+    for (var i = data.length - 1; i >= 1; i--) { // Start from the end to find the most recent entry
+      if (data[i][2] == uid && data[i][4] === "") {
+        lastEntryIndex = i;
+        break; // Exit loop once the most recent entry with empty OUTIME is found
+      }
+    }
+
+    if (lastEntryIndex != -1) {
+      var row_number = lastEntryIndex + 1; // Adjust row_number to match the 1-based index
+      var in_time = data[lastEntryIndex][3]; // INTIME is in the 4th column (index 3)
+
+      Logger.log("Found entry at row: " + row_number);
+      Logger.log("INTIME: " + in_time);
+
+      // Update OUTIME for the most recent entry
+      sheet.getRange(row_number, 5).setValue(time);
+      Logger.log("Check-out recorded  " + empDetails.name);
+
+      // Ensure in_time is formatted as a string
+      in_time = Utilities.formatDate(new Date(in_time), Session.getScriptTimeZone(), "HH:mm:ss");
+
+      // Calculate duration
+      var duration = calculateDuration(in_time, time);
+      sheet.getRange(row_number, 6).setValue(duration); // DURATION is in the 6th column (index 5)
+      Logger.log("Duration calculated: " + duration);
+
+      return ContentService.createTextOutput("Check-out recorded  " + empDetails.name + " at " + time + " after checking in at " + in_time + " with duration " + duration);
+    }
+
+    // If no entry found or all OUTIMEs are filled, log a new check-in
+    sheet.insertRowAfter(1); // Insert a new row directly below the header row
+    var newRow = [date, empDetails.name, uid, time, "", "", empDetails.manager, empDetails.domain]; // New row data
+
+    // Insert the new row data into the newly inserted row
+    sheet.getRange(2, 1, 1, newRow.length).setValues([newRow]);
+    Logger.log("Check-in recorded " + empDetails.name + " with data: " + JSON.stringify(newRow));
+
+    return ContentService.createTextOutput("Check-in recorded  " + empDetails.name + " at " + time);
+  } catch (error) {
+    Logger.log("Error: " + error.toString());
+    return ContentService.createTextOutput("Error: " + error.toString());
+  }
+}
+
+function calculateDuration(inTime, outTime) {
+  var inTimeArray = inTime.split(":");
+  var outTimeArray = outTime.split(":");
+
+  var inDate = new Date(0, 0, 0, inTimeArray[0], inTimeArray[1], inTimeArray[2]);
+  var outDate = new Date(0, 0, 0, outTimeArray[0], outTimeArray[1], outTimeArray[2]);
+
+  var diff = outDate - inDate;
+
+  var hours = Math.floor(diff / 1000 / 60 / 60);
+  var minutes = Math.floor((diff / 1000 / 60) % 60);
+  var seconds = Math.floor((diff / 1000) % 60);
+
+  return (hours < 10 ? "0" : "") + hours + ":" +
+         (minutes < 10 ? "0" : "") + minutes + ":" +
+         (seconds < 10 ? "0" : "") + seconds;
+}
+
+function testDoGet() {
+  var e = { parameter: { uid: "9846SWEC88WEC5" } };
+  var result = doGet(e);
+  Logger.log(result.getContent());
+}
+

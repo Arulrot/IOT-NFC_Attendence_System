@@ -1,0 +1,196 @@
+#include <SPI.h>
+#include <MFRC522.h>
+#include <ESP8266WiFi.h>
+#include <WiFiClientSecure.h>
+#include <ESP8266HTTPClient.h>
+#include <UniversalTelegramBot.h>
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+
+// RFID
+#define SS_PIN D4
+#define RST_PIN D3
+MFRC522 mfrc522(SS_PIN, RST_PIN);
+
+// Buzzer
+const int buzzerPin = D0;
+
+// WiFi credentials
+const char* ssid = "\\WIFINAME";
+const char* password = "\\PASS";
+
+// Google Script deployment URL
+const char* googleScriptURL = "\\WEBSCRIPT URL"
+// Telegram BOT Token
+const char* BOTtoken = "69976555:RWMVUNENVIUEIUVN";
+
+// Your Telegram group chat ID
+const char* group_chat_id = "-5484446465484515";
+
+WiFiClientSecure wifiClient;
+UniversalTelegramBot bot(BOTtoken, wifiClient);
+
+// Initialize the LCD
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+
+// Variables for reset timing
+unsigned long startTime;
+const unsigned long resetInterval = 5 * 60 * 1000; // 5 minutes in milliseconds
+
+void setup() {
+  Serial.begin(9600);
+  SPI.begin();
+  mfrc522.PCD_Init();
+
+  pinMode(buzzerPin, OUTPUT);
+
+  lcd.begin();
+  Wire.setClock(10000);
+  lcd.backlight();
+  lcd.setCursor(0, 0);
+  lcd.print("Initializing...");
+  
+  WiFi.begin(ssid, password);
+  Serial.print("Connecting to WiFi...");
+  lcd.setCursor(0, 1);
+  lcd.print("Connecting...");
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("Connected!");
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("WiFi Connected!");
+  delay(1000);
+  lcd.clear();
+  lcd.print("Place Tag!");
+
+  wifiClient.setInsecure();
+
+  startTime = millis(); // Initialize start time
+}
+
+void loop() {
+  // Check if it's time to reset
+  if (millis() - startTime >= resetInterval) {
+    Serial.println("Resetting...");
+    ESP.reset();
+  }
+
+  if (!mfrc522.PICC_IsNewCardPresent()) {
+    return;
+  }
+
+  if (!mfrc522.PICC_ReadCardSerial()) {
+    return;
+  }
+
+  String uidString = "";
+  for (byte i = 0; i < mfrc522.uid.size; i++) {
+    uidString += String(mfrc522.uid.uidByte[i], HEX);
+  }
+  uidString.toUpperCase();
+  Serial.println("Card UID: " + uidString);
+  lcd.clear();
+  lcd.print("Updating ");
+  lcd.setCursor(0, 1);
+  lcd.print("Please wait!");
+
+  beep(1);
+
+  if (WiFi.status() == WL_CONNECTED) {
+    HTTPClient http;
+    String url = String(googleScriptURL) + "?uid=" + uidString;
+    Serial.println("Request URL: " + url);
+    http.begin(wifiClient, url);
+
+    int httpCode = http.GET();
+    
+    if (httpCode == HTTP_CODE_FOUND) {
+      String newLocation = http.getLocation();
+      Serial.println("Redirecting to: " + newLocation);
+      http.end();
+      http.begin(wifiClient, newLocation);
+      httpCode = http.GET();
+    }
+
+    if (httpCode > 0) {
+      if (httpCode == HTTP_CODE_OK) {
+        String payload = http.getString();
+        Serial.println("Response: " + payload);
+
+        String name, status, time, details;
+        if (payload.startsWith("Check-in")) {
+          status = "IN";
+          int idx = payload.indexOf(" at ");
+          name = payload.substring(18, idx);  // Extract name
+          time = payload.substring(idx + 4);  // Extract time
+          details = "Checked in at: " + time;
+          beep(2);
+        } else if (payload.startsWith("Check-out")) {
+          status = "OUT";
+          int idx = payload.indexOf(" at ");
+          int idx2 = payload.indexOf(" after checking in at ");
+          int idx3 = payload.indexOf(" with duration ");
+          name = payload.substring(19, idx);
+          String checkOutTime = payload.substring(idx + 4, idx2);
+          String checkInTime = payload.substring(idx2 + 22, idx3);
+          String duration = payload.substring(idx3 + 15);
+          details = "Checked out at: " + checkOutTime + "\nChecked in at: " + checkInTime + "\nDuration: " + duration;
+          beep(3);
+        } else {
+          name = "Unknown";
+          status = "Error";
+          details = "Error";
+          beep(10);
+        }
+
+        lcd.clear();
+        lcd.setCursor(0, 0);
+        lcd.print("Name: " + name);
+        lcd.setCursor(0, 1);
+        lcd.print("Status: " + status);
+        delay(2000);
+        lcd.clear();
+        lcd.print("Processing :");
+        lcd.setCursor(0,1);
+        lcd.print("Telegram MSG");
+
+        Serial.println("Name: " + name);
+        Serial.println("Status: " + status);
+        Serial.println("Details: " + details);
+
+        String message = "Name: " + name + "\nStatus: " + status + "\n" + details;
+        bot.sendMessage(group_chat_id, message);
+        lcd.clear();
+        lcd.print("Place Tag");
+      } else {
+        Serial.printf("HTTP error code: %d\n", httpCode);
+        lcd.clear();
+        lcd.print("Error");
+        lcd.setCursor(0, 1);
+        lcd.print("Code: " + httpCode);
+        beep(10);
+      }
+    } else {
+      Serial.printf("Error on HTTP request: %s\n", http.errorToString(httpCode).c_str());
+      beep(10);
+    }
+    http.end();
+  } else {
+    Serial.println("WiFi not connected");
+    beep(10);
+  }
+  delay(1000);
+}
+
+void beep(int count) {
+  for (int i = 0; i < count; i++) {
+    tone(buzzerPin, 1000);
+    delay(200);
+    noTone(buzzerPin);
+    delay(200);
+  }
+}
